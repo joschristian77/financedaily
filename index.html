@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<title>Duit</title>
+<meta name="description" content="Daily money tracker for RMB and Rupiah.">
+<meta name="theme-color" content="#f5f7fd">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Duit">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<header class="hdr">
+  <div class="hdr-in">
+    <span class="mark" id="mark"></span>
+    <div class="hdr-t">
+      <h1 id="pgTitle">Home</h1>
+      <p id="pgSub"></p>
+    </div>
+    <button class="ghost" id="btnSettings" aria-label="Settings"></button>
+    <button class="hdr-add" id="btnAdd" aria-label="Add transaction"></button>
+  </div>
+</header>
+
+<main class="shell" id="view"></main>
+
+<nav class="nav" aria-label="Sections">
+  <div class="nav-in" id="nav"></div>
+</nav>
+
+<div class="ovl" id="sheetOvl">
+  <div class="sheet" role="dialog" aria-modal="true">
+    <span class="grab"></span>
+    <div class="sheet-hd">
+      <h3 id="sheetTitle"></h3>
+      <button class="ghost" data-close aria-label="Close"></button>
+    </div>
+    <div class="sheet-bd" id="sheetBody"></div>
+    <div class="sheet-ft" id="sheetFoot"></div>
+  </div>
+</div>
+
+<div id="toast"><span id="toastMsg"></span><button id="toastAct"></button></div>
+<input type="file" id="fileIn" accept="application/json,.json" hidden>
+
+<script src="app.js"></script>
+</body>
+</html>
