@@ -160,10 +160,11 @@ function commit(opts){
 
 /* ============================ money ============================ */
 const rate = () => (+S.s.rate>0 ? +S.s.rate : 2250);
-function toBase(amt,cur){
+function toBase(amt,cur,txRate){
   const b=S.s.base;
   if(cur===b) return amt;
-  return cur==="IDR" ? amt/rate() : amt*rate();
+  const r = (typeof txRate==="number" && txRate>0) ? txRate : rate();
+  return cur==="IDR" ? amt/r : amt*r;
 }
 function fmt(v,cur,short){
   const c=CUR[cur]||CUR[S.s.base], a=Math.abs(v), sign=v<0?"-":"";
@@ -206,6 +207,37 @@ const monthLabel = ts => { const d=new Date(ts); return MONL[d.getMonth()]+" "+d
 const daysInMonth = ts => { const d=new Date(ts); return new Date(d.getFullYear(),d.getMonth()+1,0).getDate(); };
 /** Days of the month that have actually happened — full month once it's in the past. */
 const daysElapsed = ts => monthStart(ts)===monthStart(Date.now()) ? new Date().getDate() : daysInMonth(ts);
+
+const weekStart = ts => { const d=new Date(sod(ts)); const dow=(d.getDay()+6)%7; d.setDate(d.getDate()-dow); return d.getTime(); };
+const yearStart = ts => { const d=new Date(ts); return new Date(d.getFullYear(),0,1).getTime(); };
+const yearEnd   = ts => { const d=new Date(ts); return new Date(d.getFullYear()+1,0,1).getTime(); };
+
+function rangeFor(scope, anchor){
+  if(scope==="day"){ const s=sod(anchor); return {s, e:s+DAY, label:dayLabel(s)}; }
+  if(scope==="week"){
+    const s=weekStart(anchor), e=s+7*DAY;
+    const a=new Date(s), b=new Date(e-DAY);
+    const sameMonth = a.getMonth()===b.getMonth() && a.getFullYear()===b.getFullYear();
+    const label = sameMonth
+      ? `${a.getDate()}–${b.getDate()} ${MON[a.getMonth()]}`
+      : `${a.getDate()} ${MON[a.getMonth()]} – ${b.getDate()} ${MON[b.getMonth()]}`;
+    return {s, e, label};
+  }
+  if(scope==="year"){ const s=yearStart(anchor); return {s, e:yearEnd(anchor), label:String(new Date(s).getFullYear())}; }
+  return {s:monthStart(anchor), e:monthEnd(anchor), label:monthLabel(anchor)};
+}
+function shiftedAnchor(scope, anchor, dir){
+  const d = new Date(anchor);
+  if(scope==="day") d.setDate(d.getDate()+dir);
+  else if(scope==="week") d.setDate(d.getDate()+dir*7);
+  else if(scope==="year") d.setFullYear(d.getFullYear()+dir);
+  else d.setMonth(d.getMonth()+dir, 1);
+  return d.getTime();
+}
+function periodTx(range){ return S.txs.filter(t=>t.ts>=range.s && t.ts<range.e).sort((a,b)=> b.ts-a.ts || (b.up||0)-(a.up||0)); }
+function periodElapsedDays(range){ return Math.max(1, Math.ceil((Math.min(Date.now(), range.e)-range.s)/DAY)); }
+const periodNoun = scope => ({day:"today", week:"this week", month:"this month", year:"this year"}[scope]||"this month");
+const periodCompareWord = scope => ({day:"yesterday", week:"last week", month:"last month", year:"last year"}[scope]||"last month");
 
 /* ============================ parser ============================ */
 function parseNum(s){
@@ -326,7 +358,7 @@ function parseLines(text, fallbackTs){
 
 /* ============================ data helpers ============================ */
 function addTx(d){
-  const t = { id:uid(), amt:d.amt, cur:d.cur, type:d.type, cat:d.cat, note:d.note||"", ts:d.ts, up:Date.now() };
+  const t = { id:uid(), amt:d.amt, cur:d.cur, type:d.type, cat:d.cat, note:d.note||"", ts:d.ts, rate:(d.rate>0?d.rate:rate()), up:Date.now() };
   S.txs.push(t);
   return t;
 }
@@ -346,17 +378,17 @@ const inMonth = (t, anchor) => t.ts>=monthStart(anchor) && t.ts<monthEnd(anchor)
 function monthTx(anchor){ return S.txs.filter(t=>inMonth(t,anchor)).sort((a,b)=> b.ts-a.ts || (b.up||0)-(a.up||0)); }
 function totals(list){
   let inc=0, out=0;
-  for(const t of list){ const v=toBase(t.amt,t.cur); if(t.type==="income") inc+=v; else out+=v; }
+  for(const t of list){ const v=toBase(t.amt,t.cur,t.rate); if(t.type==="income") inc+=v; else out+=v; }
   return { inc, out, net:inc-out };
 }
 function byCategory(list){
   const m={};
-  for(const t of list){ if(t.type!=="expense") continue; m[t.cat]=(m[t.cat]||0)+toBase(t.amt,t.cur); }
+  for(const t of list){ if(t.type!=="expense") continue; m[t.cat]=(m[t.cat]||0)+toBase(t.amt,t.cur,t.rate); }
   return Object.entries(m).sort((a,b)=>b[1]-a[1]);
 }
 
 /* ============================ view state ============================ */
-const V = { tab:"home", anchor:today(), q:"", cat:null, qaDate:null };
+const V = { tab:"home", anchor:today(), q:"", cat:null, qaDate:null, scope:"month" };
 const TABS = [
   {id:"home",  label:"Home",    icon:"home",  title:"Home"},
   {id:"tx",    label:"History", icon:"list",  title:"Transactions"},
@@ -376,7 +408,8 @@ function draw(){
   $("#pgTitle").textContent = tab.title;
   $("#pgSub").textContent = V.tab==="more"
     ? (SYNC.status==="on" ? "Synced" : "This device only")
-    : monthLabel(V.anchor);
+    : V.tab==="budget" ? monthLabel(V.anchor)
+    : rangeFor(V.scope, V.anchor).label;
   $("#nav").innerHTML = TABS.map(t=>
     `<button data-tab="${t.id}" ${t.id===V.tab?'aria-current="page"':""}><span class="np">${ico(t.icon)}</span>${t.label}</button>`).join("");
   const v = $("#view");
@@ -395,28 +428,29 @@ function applyTheme(){
 
 /* ---------------- home ---------------- */
 function viewHome(){
-  const list = monthTx(V.anchor), T = totals(list);
-  const prevList = monthTx(monthStart(V.anchor)-1);
-  const prev = totals(prevList);
+  const range = rangeFor(V.scope, V.anchor);
+  const list = periodTx(range), T = totals(list);
+  const prevAnchor = shiftedAnchor(V.scope, V.anchor, -1);
+  const prevRange = rangeFor(V.scope, prevAnchor);
+  const prev = totals(periodTx(prevRange));
   const cats = byCategory(list);
   const surplus = T.net>=0;
   const denom = T.inc+T.out;
   const inPct = denom? T.inc/denom*100 : 50;
 
-  // Only compare against a month that actually has enough in it to compare against.
   let delta="";
-  if(T.out>0 && prev.out>0 && prevList.length>=5){
+  if(T.out>0 && prev.out>0){
     const d=(T.out-prev.out)/prev.out*100;
-    delta = `<div class="hero-delta ${d>0?"down":""}">${ico(d>0?"arrowUp":"arrowDown")}${Math.abs(Math.round(d))}% spending vs last month</div>`;
+    delta = `<div class="hero-delta ${d>0?"down":""}">${ico(d>0?"arrowUp":"arrowDown")}${Math.abs(Math.round(d))}% spending vs ${periodCompareWord(V.scope)}</div>`;
   }else if(T.out>0){
-    delta = `<div class="hero-delta">${ico("trendUp")}${fmtB(T.out/Math.max(1,daysElapsed(V.anchor)))} a day so far</div>`;
+    delta = `<div class="hero-delta">${ico("trendUp")}${fmtB(T.out/periodElapsedDays(range))} a day so far</div>`;
   }
 
   return `
   <section class="hero">
     <span class="hero-pill">${surplus?"Surplus":"Deficit"}</span>
     <div class="hero-amt mono">${fmtB(Math.abs(T.net))}</div>
-    <div class="hero-cap">${surplus?"left over":"overspent"} this month</div>
+    <div class="hero-cap">${surplus?"left over":"overspent"} ${periodNoun(V.scope)}</div>
     ${delta}
     <div class="hero-split">
       <div class="hero-cell">
@@ -432,8 +466,10 @@ function viewHome(){
       <div class="lbls"><span style="color:var(--hero-in)">In ${Math.round(inPct)}%</span><span style="color:var(--hero-out)">Out ${100-Math.round(inPct)}%</span></div>
       <div class="track"><i style="width:${inPct}%;background:var(--hero-in)"></i><i style="width:${100-inPct}%;background:var(--hero-out)"></i></div>
     </div>`:""}
-    <button class="hero-link" data-go="tx">${list.length} transaction${list.length===1?"":"s"} this month ${ico("chevR")}</button>
+    <button class="hero-link" data-go="tx">${list.length} transaction${list.length===1?"":"s"} ${periodNoun(V.scope)} ${ico("chevR")}</button>
   </section>
+
+  ${periodBarHTML()}
 
   ${quickAddHTML()}
 
@@ -445,7 +481,7 @@ function viewHome(){
 
   <section class="sec">
     <div class="sec-hd"><h2>Recent</h2>${list.length?`<button data-go="tx">See all</button>`:""}</div>
-    ${list.length ? listHTML(list.slice(0,7)) : `<div class="card empty"><b>Nothing yet this month</b>Type an entry above — try <i>lunch 25rmb</i>.</div>`}
+    ${list.length ? listHTML(list.slice(0,7)) : `<div class="card empty"><b>Nothing yet ${periodNoun(V.scope)}</b>Type an entry above — try <i>lunch 25rmb</i>.</div>`}
   </section>
 
   ${cats.length ? `<section class="sec">
@@ -476,7 +512,7 @@ function listHTML(list){
   const groups=new Map();
   for(const t of list){ const k=dstr(t.ts); if(!groups.has(k)) groups.set(k,[]); groups.get(k).push(t); }
   return [...groups.entries()].map(([k,ts])=>{
-    const net = ts.reduce((a,t)=>a+(t.type==="income"?1:-1)*toBase(t.amt,t.cur),0);
+    const net = ts.reduce((a,t)=>a+(t.type==="income"?1:-1)*toBase(t.amt,t.cur,t.rate),0);
     return `<div class="daygrp">
       <div class="eyebrow">${esc(dayLabel(fromDstr(k)))}<span class="mono" style="color:${net>=0?"var(--inc-tx)":"var(--muted)"}">${net>0?"+":""}${fmtB(net)}</span></div>
       <div class="rows">${ts.map(rowHTML).join("")}</div>
@@ -489,7 +525,7 @@ function rowHTML(t){
   return `<button class="row" data-edit="${t.id}">
     <span class="ic" style="background:${tint(c.color,.13)};color:${c.color}">${ico(c.icon)}</span>
     <span class="mid"><b>${esc(t.note || c.label)}</b><small>${esc(c.label)}</small></span>
-    <span><span class="amt-pill ${inc?"in":"out"} mono">${inc?"+":"−"}${fmtB(toBase(t.amt,t.cur))}</span>${alt}</span>
+    <span><span class="amt-pill ${inc?"in":"out"} mono">${inc?"+":"−"}${fmtB(toBase(t.amt,t.cur,t.rate))}</span>${alt}</span>
   </button>`;
 }
 function catBoxHTML(cats, total, limit){
@@ -515,7 +551,8 @@ function catBoxHTML(cats, total, limit){
 
 /* ---------------- transactions ---------------- */
 function viewTx(){
-  const all = monthTx(V.anchor);
+  const range = rangeFor(V.scope, V.anchor);
+  const all = periodTx(range);
   const q = V.q.trim().toLowerCase();
   const list = all.filter(t =>
     (!V.cat || t.cat===V.cat) &&
@@ -524,7 +561,7 @@ function viewTx(){
   const used = [...new Set(all.map(t=>t.cat))].map(id=>CATBY[id]).filter(Boolean);
 
   return `
-  ${monthBarHTML()}
+  ${periodBarHTML()}
   <div class="searchbar">${ico("search")}<input id="q" placeholder="Search notes and categories" value="${esc(V.q)}" autocomplete="off"></div>
   ${used.length? `<div class="chiprow">
     <button class="chip" data-filter="" ${!V.cat?'aria-pressed="true"':""}>All</button>
@@ -550,7 +587,7 @@ function viewTx(){
 
   <section class="sec">
     <div class="sec-hd"><h2>${list.length} entr${list.length===1?"y":"ies"}</h2></div>
-    ${list.length ? listHTML(list) : `<div class="card empty"><b>Nothing found</b>${all.length?"Try clearing the search or filter.":"No transactions in "+monthLabel(V.anchor)+"."}</div>`}
+    ${list.length ? listHTML(list) : `<div class="card empty"><b>Nothing found</b>${all.length?"Try clearing the search or filter.":"No transactions "+periodNoun(V.scope)+"."}</div>`}
   </section>`;
 }
 function monthBarHTML(){
@@ -559,6 +596,19 @@ function monthBarHTML(){
     <button data-month="-1" aria-label="Previous month">${ico("chevL")}</button>
     <b>${monthLabel(V.anchor)}</b>
     <button data-month="1" ${atNow?"disabled":""} aria-label="Next month">${ico("chevR")}</button>
+  </div></div>`;
+}
+const SCOPES = [["day","Day"],["week","Week"],["month","Month"],["year","Year"]];
+function periodBarHTML(){
+  const atNow = rangeFor(V.scope, V.anchor).s >= rangeFor(V.scope, Date.now()).s;
+  const label = rangeFor(V.scope, V.anchor).label;
+  return `<div class="seg period">
+    ${SCOPES.map(([id,lb])=>`<button data-scope="${id}" ${V.scope===id?'aria-pressed="true"':""}>${lb}</button>`).join("")}
+  </div>
+  <div class="monthbar"><div class="nav">
+    <button data-shift="-1" aria-label="Previous period">${ico("chevL")}</button>
+    <b>${esc(label)}</b>
+    <button data-shift="1" ${atNow?"disabled":""} aria-label="Next period">${ico("chevR")}</button>
   </div></div>`;
 }
 
@@ -617,51 +667,76 @@ function viewBudget(){
 
 /* ---------------- reports ---------------- */
 function viewReport(){
-  const list = monthTx(V.anchor), T = totals(list);
+  const range = rangeFor(V.scope, V.anchor);
+  const list = periodTx(range), T = totals(list);
   const cats = byCategory(list);
-  const days = daysInMonth(V.anchor);
-  const outSeries = new Array(days).fill(0), inSeries = new Array(days).fill(0);
-  for(const t of list){
-    const d = new Date(t.ts).getDate()-1;
-    const v = toBase(t.amt,t.cur);
-    if(t.type==="income") inSeries[d]+=v; else outSeries[d]+=v;
+  const elapsed = periodElapsedDays(range);
+
+  let chartHTML = "";
+  if(V.scope==="day"){
+    chartHTML = `<div class="card empty"><b>No daily chart for a single day</b>Switch to Week, Month, or Year to see a flow chart.</div>`;
+  }else{
+    let labels, bucketOf;
+    if(V.scope==="week"){
+      labels = Array.from({length:7},(_,i)=>{ const d=new Date(range.s); d.setDate(d.getDate()+i); return DOW[d.getDay()]; });
+      bucketOf = t => Math.floor((sod(t.ts)-range.s)/DAY);
+    }else if(V.scope==="year"){
+      labels = MON.slice();
+      bucketOf = t => new Date(t.ts).getMonth();
+    }else{
+      const days = daysInMonth(V.anchor);
+      labels = Array.from({length:days},(_,i)=>String(i+1));
+      bucketOf = t => new Date(t.ts).getDate()-1;
+    }
+    const outSeries = new Array(labels.length).fill(0), inSeries = new Array(labels.length).fill(0);
+    for(const t of list){
+      const b = bucketOf(t);
+      if(b<0 || b>=labels.length) continue;
+      const v = toBase(t.amt,t.cur,t.rate);
+      if(t.type==="income") inSeries[b]+=v; else outSeries[b]+=v;
+    }
+    chartHTML = `<section class="sec">
+      <div class="sec-hd"><h2>${V.scope==="year"?"Monthly flow":"Daily flow"}</h2><span style="font-size:12.5px;color:var(--muted);font-weight:600">${esc(range.label)}</span></div>
+      <div class="card chartbox">
+        ${flowChart(inSeries, outSeries, labels)}
+        <div class="legend2"><span><i style="background:var(--exp)"></i>Out</span><span><i style="background:var(--inc)"></i>In</span></div>
+      </div>
+    </section>`;
   }
+
   const notes = {};
-  for(const t of list){ if(t.type!=="expense") continue; const k=(t.note||CATBY[t.cat].label).toLowerCase(); notes[k]=(notes[k]||0)+toBase(t.amt,t.cur); }
+  for(const t of list){ if(t.type!=="expense") continue; const k=(t.note||CATBY[t.cat].label).toLowerCase(); notes[k]=(notes[k]||0)+toBase(t.amt,t.cur,t.rate); }
   const topNotes = Object.entries(notes).sort((a,b)=>b[1]-a[1]).slice(0,5);
 
   // last 6 months of spending
-  const months=[];
-  for(let i=5;i>=0;i--){
-    const d=new Date(V.anchor); d.setMonth(d.getMonth()-i,1);
-    const tt=totals(monthTx(d.getTime()));
-    months.push({label:MON[d.getMonth()], out:tt.out, inc:tt.inc, cur:i===0});
+  let monthsHTML = "";
+  if(V.scope!=="year"){
+    const months=[];
+    for(let i=5;i>=0;i--){
+      const d=new Date(V.anchor); d.setMonth(d.getMonth()-i,1);
+      const tt=totals(monthTx(d.getTime()));
+      months.push({label:MON[d.getMonth()], out:tt.out, inc:tt.inc, cur:i===0});
+    }
+    monthsHTML = `<section class="sec">
+      <div class="sec-hd"><h2>Last 6 months</h2></div>
+      <div class="card chartbox">${monthsChart(months)}</div>
+    </section>`;
   }
-  const elapsed = daysElapsed(V.anchor);
 
   return `
-  ${monthBarHTML()}
+  ${periodBarHTML()}
   <div class="stats" style="grid-template-columns:1fr 1fr;margin-top:14px">
     <div class="stat t-out"><div class="top"><span class="ic" style="background:var(--exp);color:#fff">${ico("arrowUp")}</span><span style="color:var(--exp-tx)">Spent</span></div>
       <div class="big mono" style="font-size:21px;color:var(--exp-tx)">${fmtB(T.out,true)}</div>
-      <div class="sub">${fmtB(T.out/Math.max(1,elapsed))} a day</div></div>
+      <div class="sub">${fmtB(T.out/elapsed)} a day</div></div>
     <div class="stat t-in"><div class="top"><span class="ic" style="background:var(--inc);color:#fff">${ico("arrowDown")}</span><span style="color:var(--inc-tx)">Earned</span></div>
       <div class="big mono" style="font-size:21px;color:var(--inc-tx)">${fmtB(T.inc,true)}</div>
       <div class="sub">${T.inc? "Spent "+Math.round(T.out/T.inc*100)+"% of it" : "No income logged"}</div></div>
   </div>
 
-  <section class="sec">
-    <div class="sec-hd"><h2>Daily flow</h2><span style="font-size:12.5px;color:var(--muted);font-weight:600">${monthLabel(V.anchor)}</span></div>
-    <div class="card chartbox">
-      ${flowChart(inSeries, outSeries, days)}
-      <div class="legend2"><span><i style="background:var(--exp)"></i>Out</span><span><i style="background:var(--inc)"></i>In</span></div>
-    </div>
-  </section>
+  ${chartHTML}
 
-  <section class="sec">
-    <div class="sec-hd"><h2>Last 6 months</h2></div>
-    <div class="card chartbox">${monthsChart(months)}</div>
-  </section>
+  ${monthsHTML}
 
   ${cats.length? `<section class="sec">
     <div class="sec-hd"><h2>By category</h2></div>
@@ -677,7 +752,8 @@ function viewReport(){
   </section>`:""}`;
 }
 
-function flowChart(inS, outS, days){
+function flowChart(inS, outS, labels){
+  const days = labels.length;
   const W=380, H=190, PL=42, PR=6, PT=10, PB=24;
   const max = Math.max(...inS, ...outS, 1);
   const x = i => PL + (i/(days-1||1))*(W-PL-PR);
@@ -685,8 +761,8 @@ function flowChart(inS, outS, days){
   const path = arr => arr.map((v,i)=>(i?"L":"M")+x(i).toFixed(1)+" "+y(v).toFixed(1)).join(" ");
   const area = arr => path(arr)+` L${x(days-1).toFixed(1)} ${H-PB} L${PL} ${H-PB} Z`;
   const ticks=[0,.5,1].map(f=>max*f);
-  const step = days>20?5:days>10?3:2;
-  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Daily money in and out">
+  const step = days>20?5:days>10?3:1;
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Money in and out over time">
     ${ticks.map(t=>`<line class="grid" x1="${PL}" x2="${W-PR}" y1="${y(t)}" y2="${y(t)}"/>
       <text x="${PL-7}" y="${y(t)+3.5}" text-anchor="end">${esc(fmtB(t,true))}</text>`).join("")}
     <path d="${area(outS)}" fill="var(--exp)" opacity=".10"/>
@@ -694,7 +770,7 @@ function flowChart(inS, outS, days){
     <path d="${path(outS)}" fill="none" stroke="var(--exp)" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
     <path d="${path(inS)}" fill="none" stroke="var(--inc)" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
     ${Array.from({length:days},(_,i)=>i).filter(i=>i%step===0||i===days-1)
-      .map(i=>`<text x="${x(i)}" y="${H-7}" text-anchor="middle">${i+1}</text>`).join("")}
+      .map(i=>`<text x="${x(i)}" y="${H-7}" text-anchor="middle">${esc(labels[i])}</text>`).join("")}
   </svg>`;
 }
 function monthsChart(months){
@@ -727,7 +803,7 @@ function viewMore(){
         <span class="g"><b>Main currency</b><small>Everything is totalled in this</small></span>
         <select id="setBase">${Object.values(CUR).map(c=>`<option value="${c.code}" ${S.s.base===c.code?"selected":""}>${c.sym} ${c.code}</option>`).join("")}</select></div>
       <div class="setrow"><span class="ic">${ico("scale")}</span>
-        <span class="g"><b>Exchange rate</b><small>Rupiah per ¥1 — set by hand, never fetched</small></span>
+        <span class="g"><b>Exchange rate</b><small>Default for new entries — edit a past entry to fix its own conversion</small></span>
         <input id="setRate" inputmode="decimal" value="${S.s.rate}"></div>
       <button class="setrow" id="setSmart"><span class="ic">${ico("target")}</span>
         <span class="g"><b>Guess the currency</b><small>${S.s.smart?"Under 1,000 → ¥ · 1,000+ → Rp":"Bare numbers use "+CUR[S.s.def].sym+" "+S.s.def}</small></span>
@@ -792,6 +868,10 @@ function wire(root){
   root.querySelectorAll("[data-edit]").forEach(b=>b.onclick=()=>openSheet("add", b.dataset.edit));
   root.querySelectorAll("[data-month]").forEach(b=>b.onclick=()=>{
     const d=new Date(V.anchor); d.setMonth(d.getMonth()+ +b.dataset.month, 1); V.anchor=d.getTime(); draw();
+  });
+  root.querySelectorAll("[data-scope]").forEach(b=>b.onclick=()=>{ V.scope=b.dataset.scope; draw(); });
+  root.querySelectorAll("[data-shift]").forEach(b=>b.onclick=()=>{
+    V.anchor = shiftedAnchor(V.scope, V.anchor, +b.dataset.shift); draw();
   });
   root.querySelectorAll("[data-filter]").forEach(b=>b.onclick=()=>{ V.cat=b.dataset.filter||null; draw(); });
   root.querySelectorAll("[data-cat]").forEach(b=>b.onclick=()=>{ V.cat=b.dataset.cat; go("tx"); });
@@ -887,7 +967,8 @@ function quickAdd(){
   if(!p.ok){ inp.focus(); return; }
   const t = addTx(p);
   inp.value="";
-  if(!inMonth(t, V.anchor)) V.anchor = t.ts;
+  const r = rangeFor(V.scope, V.anchor);
+  if(!(t.ts>=r.s && t.ts<r.e)) V.anchor = t.ts;
   commit();
   toast(`${fmt(t.amt,t.cur)} · ${CATBY[t.cat].label}`, "Undo", ()=>{ removeTx(t.id); commit(); });
   const again=$("#qin"); if(again) again.focus();
@@ -918,7 +999,8 @@ function sheetAdd(editId){
     type: t?t.type:"expense",
     cur: t?t.cur:(S.s.smart?S.s.def:S.s.def),
     cat: t?t.cat:"other",
-    ts: t?t.ts:(V.qaDate||today())
+    ts: t?t.ts:(V.qaDate||today()),
+    rate: t&&t.rate>0 ? t.rate : rate()
   };
   showSheet(t?"Edit transaction":"Add transaction", `
     <div class="fld"><div class="seg out" id="sType">
@@ -929,6 +1011,8 @@ function sheetAdd(editId){
         <select id="sCur">${Object.values(CUR).map(c=>`<option value="${c.code}">${c.sym} ${c.code}</option>`).join("")}</select>
       </div>
       <div class="hint" id="sConv"></div></div>
+    <div class="fld" id="sRateFld" style="display:none"><label>Exchange rate (Rp per ¥1)</label>
+      <input id="sRateField" inputmode="decimal" value="${sheetState.rate}"></div>
     <div class="fld"><label>Note</label><input id="sNote" placeholder="e.g. dinner at warung" value="${t?esc(t.note):""}"></div>
     <div class="fld"><label>Date</label><input id="sDate" type="date" value="${dstr(sheetState.ts)}"></div>
     <div class="fld"><label>Category</label><div class="catgrid" id="sCats"></div></div>
@@ -936,7 +1020,7 @@ function sheetAdd(editId){
      <button class="btn sec" data-close>Cancel</button>
      <button class="btn pri" id="sSave">${t?"Save":"Add"}</button>`);
 
-  const amt=$("#sAmt"), cur=$("#sCur"), conv=$("#sConv");
+  const amt=$("#sAmt"), cur=$("#sCur"), conv=$("#sConv"), rateFld=$("#sRateFld"), rateInp=$("#sRateField");
   cur.value = sheetState.cur;
   const paintType=()=>{
     $("#sType").className = "seg "+(sheetState.type==="income"?"":"out");
@@ -952,14 +1036,18 @@ function sheetAdd(editId){
       <span class="ic" style="background:${tint(c.color,.13)};color:${c.color}">${ico(c.icon)}</span>${esc(c.label)}</button>`).join("");
     $("#sCats").querySelectorAll("[data-c]").forEach(b=>b.onclick=()=>{ sheetState.cat=b.dataset.c; paintCats(); });
   };
+  const curRate=()=>{ const r=parseNum(rateInp.value); return r>0?r:rate(); };
   const paintConv=()=>{
     const v=parseNum(amt.value)||0;
-    conv.textContent = (cur.value!==S.s.base && v)
-      ? `≈ ${fmtB(toBase(v,cur.value))} at ${new Intl.NumberFormat("en-US").format(rate())} Rp per ¥1`
+    const showRate = cur.value!==S.s.base;
+    rateFld.style.display = showRate?"":"none";
+    conv.textContent = (showRate && v)
+      ? `≈ ${fmtB(toBase(v,cur.value,curRate()))} at ${new Intl.NumberFormat("en-US").format(curRate())} Rp per ¥1`
       : "";
   };
   $("#sType").onclick=e=>{ const b=e.target.closest("button"); if(!b)return; sheetState.type=b.dataset.t; paintType(); };
   amt.oninput=paintConv; cur.onchange=()=>{ sheetState.cur=cur.value; paintConv(); };
+  rateInp.oninput=paintConv;
   paintType(); paintConv();
   setTimeout(()=>{ if(!t) amt.focus(); },120);
 
@@ -967,13 +1055,15 @@ function sheetAdd(editId){
     const v=parseNum(amt.value);
     if(!v||v<=0){ amt.focus(); amt.style.borderColor="var(--exp)"; setTimeout(()=>amt.style.borderColor="",1000); return; }
     const data={ amt:Math.abs(v), cur:cur.value, type:sheetState.type, cat:sheetState.cat,
-                 note:$("#sNote").value.trim(), ts:fromDstr($("#sDate").value||dstr(today())) };
+                 note:$("#sNote").value.trim(), ts:fromDstr($("#sDate").value||dstr(today())),
+                 rate:parseNum(rateInp.value)||rate() };
     if(sheetState.id){
       Object.assign(S.txs.find(x=>x.id===sheetState.id), data, {up:Date.now()});
       closeSheet(); commit(); toast("Saved");
     }else{
       const nt=addTx(data);
-      if(!inMonth(nt,V.anchor)) V.anchor=nt.ts;
+      const r = V.tab==="budget" ? {s:monthStart(V.anchor), e:monthEnd(V.anchor)} : rangeFor(V.scope, V.anchor);
+      if(!(nt.ts>=r.s && nt.ts<r.e)) V.anchor=nt.ts;
       closeSheet(); commit();
       toast(`${fmt(nt.amt,nt.cur)} · ${CATBY[nt.cat].label}`, "Undo", ()=>{ removeTx(nt.id); commit(); });
     }
@@ -1067,9 +1157,9 @@ function sheetFirebase(){
 async function action(kind){
   if(kind==="csv"){
     const q=s=>'"'+String(s==null?"":s).replace(/"/g,'""')+'"';
-    const rows=[["date","type","category","note","amount","currency","amount_in_"+S.s.base]];
+    const rows=[["date","type","category","note","amount","currency","rate","amount_in_"+S.s.base]];
     [...S.txs].sort((a,b)=>a.ts-b.ts).forEach(t=>
-      rows.push([dstr(t.ts),t.type,CATBY[t.cat]?CATBY[t.cat].label:t.cat,t.note||"",t.amt,t.cur,toBase(t.amt,t.cur).toFixed(2)]));
+      rows.push([dstr(t.ts),t.type,CATBY[t.cat]?CATBY[t.cat].label:t.cat,t.note||"",t.amt,t.cur,t.cur===S.s.base?"":(t.rate||""),toBase(t.amt,t.cur,t.rate).toFixed(2)]));
     return download(`duit-${dstr(today())}.csv`, rows.map(r=>r.map(q).join(",")).join("\n"), "text/csv");
   }
   if(kind==="backup") return download(`duit-backup-${dstr(today())}.json`, JSON.stringify(S,null,2), "application/json");
