@@ -95,10 +95,26 @@ const INCOME_WORDS = new Set(["income","masuk","terima","diterima","received","d
 /* ============================ state ============================ */
 const KEY = "duit.v2";
 const OLD_KEY = "duit.v1";
+/**
+ * Baked-in Firebase project so sync works with just the Settings toggle —
+ * no per-device config paste. The apiKey here is a public project
+ * identifier, not a secret; the Firestore rules are what actually gate
+ * access to any given user's data. Clear it in Settings to point at a
+ * different project instead.
+ */
+const DEFAULT_FB = {
+  apiKey: "AIzaSyBneGkGcRjPoZF-SDlfuLIODZB4xr7X_8M",
+  authDomain: "financedaily-2ebc9.firebaseapp.com",
+  projectId: "financedaily-2ebc9",
+  storageBucket: "financedaily-2ebc9.firebasestorage.app",
+  messagingSenderId: "652289335275",
+  appId: "1:652289335275:web:5f557e6f68714ad776c3ae",
+  measurementId: "G-RDXKHZRHQY"
+};
 const DEFAULTS = {
   txs: [], tomb: [],
   s: { base:"CNY", def:"CNY", rate:2250, budget:0, budgets:{}, theme:"auto", smart:true,
-       sync:false, fb:null, uid:null, lastSync:0 }
+       sync:false, fb:DEFAULT_FB, uid:null, lastSync:0 }
 };
 let S = loadState();
 let SYNC = { mod:null, status:"off", msg:"Off", user:null };
