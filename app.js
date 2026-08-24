@@ -140,6 +140,7 @@ function loadState(){
     if(Array.isArray(p.tomb)) base.tomb = p.tomb;
     Object.assign(base.s, p.s||{});
     if(!base.s.budgets) base.s.budgets = {};
+    if(!base.s.fb) base.s.fb = DEFAULT_FB;   // saved state predates the baked-in config; don't let a stale null hide it
     return base;
   }catch(e){ return base; }
 }
@@ -496,11 +497,13 @@ function quickAddHTML(){
     <div class="qa-row">
       ${ico("plus")}
       <input id="qin" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="dinner food 20rmb" value="${esc($("#qin")?$("#qin").value:"")}">
-      <button class="qa-date ${d?"set":""}" id="qaDateBtn">${ico("cal")}<span>${d?dayLabel(d):"Today"}</span></button>
+      <span class="qa-date-wrap ${d?"set":""}">
+        <button class="qa-date" id="qaDateBtn" tabindex="-1">${ico("cal")}<span>${d?dayLabel(d):"Today"}</span></button>
+        <input type="date" id="qaDateIn" class="qa-date-input" value="${dstr(d||today())}" aria-label="Entry date">
+      </span>
       <button class="qa-go" id="qaGo" disabled aria-label="Add">${ico("check")}</button>
     </div>
     <div class="qa-prev" id="qaPrev"></div>
-    <input type="date" id="qaDateIn" style="position:absolute;opacity:0;pointer-events:none;width:1px;height:1px">
   </div>
   <div class="examples">
     ${["dinner food 20rmb","kopi 18rb","grab 25k","kemarin nasi goreng 15000","listrik 300rb","+gaji 8000rmb"]
@@ -888,17 +891,14 @@ function wire(root){
     qin.oninput = qaPreview;
     qin.onkeydown = e => { if(e.key==="Enter"){ e.preventDefault(); quickAdd(); } };
     root.querySelector("#qaGo").onclick = quickAdd;
+    // The native <input type=date> sits invisibly over the button and takes the tap
+    // directly — showPicker() is unreliable in Safari, especially in home-screen PWAs.
     const di = root.querySelector("#qaDateIn");
-    root.querySelector("#qaDateBtn").onclick = () => {
-      di.value = dstr(V.qaDate||today());
-      if(di.showPicker) { try{ di.showPicker(); return; }catch(e){} }
-      di.style.position="static"; di.style.opacity="1"; di.style.width="auto"; di.style.height="auto"; di.style.pointerEvents="auto"; di.focus();
-    };
     di.onchange = () => {
       V.qaDate = di.value ? fromDstr(di.value) : null;
-      const btn=$("#qaDateBtn");
-      btn.classList.toggle("set", V.qaDate!==null && V.qaDate!==today());
-      btn.querySelector("span").textContent = V.qaDate? dayLabel(V.qaDate):"Today";
+      const wrap=di.closest(".qa-date-wrap");
+      wrap.classList.toggle("set", V.qaDate!==null && V.qaDate!==today());
+      wrap.querySelector("#qaDateBtn span").textContent = V.qaDate? dayLabel(V.qaDate):"Today";
       qaPreview();
     };
     qaPreview();
