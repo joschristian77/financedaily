@@ -892,8 +892,10 @@ function wire(root){
     qin.onkeydown = e => { if(e.key==="Enter"){ e.preventDefault(); quickAdd(); } };
     root.querySelector("#qaGo").onclick = quickAdd;
     // The native <input type=date> sits invisibly over the button and takes the tap
-    // directly — showPicker() is unreliable in Safari, especially in home-screen PWAs.
+    // directly. showPicker() alone is unreliable in Safari, so it's only a backup nudge
+    // fired from within the input's own click — still inside the user-gesture chain.
     const di = root.querySelector("#qaDateIn");
+    di.onclick = () => { if(di.showPicker){ try{ di.showPicker(); }catch(e){} } };
     di.onchange = () => {
       V.qaDate = di.value ? fromDstr(di.value) : null;
       const wrap=di.closest(".qa-date-wrap");
