@@ -49,7 +49,8 @@ const ICON = {
   moon:'<path d="M20.5 14.5A8.7 8.7 0 0 1 9.5 3.5a8.7 8.7 0 1 0 11 11z"/>',
   list:'<rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="M2 10h20"/>',
   layers:'<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/>',
-  check:'<path d="M4 12.5l5 5L20 6.5"/>'
+  check:'<path d="M4 12.5l5 5L20 6.5"/>',
+  camera:'<path d="M4 8.5a2 2 0 0 1 2-2h1.2l1-1.8a2 2 0 0 1 1.8-1.2h4a2 2 0 0 1 1.8 1.2l1 1.8H18a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><circle cx="12" cy="13" r="3.6"/>'
 };
 const ico = (n) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${ICON[n]||ICON.box}</svg>`;
 
@@ -538,6 +539,7 @@ function quickAddHTML(){
         <button class="qa-date" id="qaDateBtn" tabindex="-1">${ico("cal")}<span>${d?dayLabel(d):"Today"}</span></button>
         <input type="date" id="qaDateIn" class="qa-date-input" value="${dstr(d||today())}" aria-label="Entry date">
       </span>
+      <button class="qa-cam" id="qaCam" aria-label="Add from photo" title="Add from a receipt photo">${ico("camera")}</button>
       <button class="qa-go" id="qaGo" disabled aria-label="Add">${ico("check")}</button>
     </div>
     <div class="qa-prev" id="qaPrev"></div>
@@ -940,6 +942,7 @@ function wire(root){
     qin.oninput = qaPreview;
     qin.onkeydown = e => { if(e.key==="Enter"){ e.preventDefault(); quickAdd(); } };
     root.querySelector("#qaGo").onclick = quickAdd;
+    root.querySelector("#qaCam").onclick = () => $("#photoIn").click();
     // The native <input type=date> sits invisibly over the button and takes the tap
     // directly. showPicker() alone is unreliable in Safari, so it's only a backup nudge
     // fired from within the input's own click — still inside the user-gesture chain.
@@ -1052,12 +1055,12 @@ function openSheet(kind, arg){
 }
 
 /* ---- add / edit ---- */
-function sheetAdd(editId){
+function sheetAdd(editId, prefill){
   const t = editId ? S.txs.find(x=>x.id===editId) : null;
   sheetState = {
     id: t?t.id:null,
     type: t?t.type:"expense",
-    cur: t?t.cur:(S.s.smart?S.s.def:S.s.def),
+    cur: t?t.cur:(prefill&&prefill.cur)||(S.s.smart?S.s.def:S.s.def),
     cat: t?t.cat:"other",
     ts: t?t.ts:(V.qaDate||today()),
     rate: t&&t.rate>0 ? t.rate : rate()
@@ -1067,13 +1070,13 @@ function sheetAdd(editId){
       <button data-t="expense">Expense</button><button data-t="income">Income</button></div></div>
     <div class="fld"><label>Amount</label>
       <div class="amtfield">
-        <input id="sAmt" inputmode="decimal" placeholder="0" value="${t?t.amt:""}">
+        <input id="sAmt" inputmode="decimal" placeholder="0" value="${t?t.amt:(prefill&&prefill.amt)||""}">
         <select id="sCur">${Object.values(CUR).map(c=>`<option value="${c.code}">${c.sym} ${c.code}</option>`).join("")}</select>
       </div>
       <div class="hint" id="sConv"></div></div>
     <div class="fld" id="sRateFld" style="display:none"><label>Exchange rate (Rp per ¥1)</label>
       <input id="sRateField" inputmode="decimal" value="${sheetState.rate}"></div>
-    <div class="fld"><label>Note</label><input id="sNote" placeholder="e.g. dinner at warung" value="${t?esc(t.note):""}"></div>
+    <div class="fld"><label>Note</label><input id="sNote" placeholder="e.g. dinner at warung" value="${t?esc(t.note):esc((prefill&&prefill.note)||"")}"></div>
     <div class="fld"><label>Date</label><input id="sDate" type="date" value="${dstr(sheetState.ts)}"></div>
     <div class="fld"><label>Category</label><div class="catgrid" id="sCats"></div></div>
   `, `${t?`<button class="btn del" id="sDel">${ico("trash")}</button>`:""}
@@ -1134,6 +1137,87 @@ function sheetAdd(editId){
     closeSheet(); commit();
     if(t2) toast("Deleted", "Undo", ()=>{ restoreTx(t2); commit(); });
   };
+}
+
+/* ---- add from photo (on-device receipt OCR) ---- */
+function loadTesseract(){
+  if(window.Tesseract) return Promise.resolve(window.Tesseract);
+  if(!loadTesseract._p){
+    loadTesseract._p = new Promise((resolve,reject)=>{
+      const s=document.createElement("script");
+      s.src="https://cdn.jsdelivr.net/npm/tesseract.js@7/dist/tesseract.min.js";
+      s.onload=()=>resolve(window.Tesseract);
+      s.onerror=()=>reject(new Error("load-failed"));
+      document.head.appendChild(s);
+    });
+  }
+  return loadTesseract._p;
+}
+/** Pull plausible money amounts out of raw OCR text — explicit "Rp"/"¥" first, then bare grouped numbers. */
+function extractMoneyCandidates(text){
+  const found = new Map();
+  const add = (raw, cur, explicit) => {
+    const v = parseNum(raw);
+    if(!(v>0)) return;
+    const key = Math.round(v*100)+cur;
+    if(!found.has(key)) found.set(key, {value:v, cur, explicit});
+  };
+  let m;
+  const rpRe = /\brp\.?\s?(\d[\d.,]*)/gi;
+  while((m=rpRe.exec(text))) add(m[1], "IDR", true);
+  const cnyRe = /(?:¥|rmb|cny)\s?(\d[\d.,]*)/gi;
+  while((m=cnyRe.exec(text))) add(m[1], "CNY", true);
+  const bareRe = /\b\d{1,3}(?:[.,]\d{3})+\b|\b\d{4,}\b/g;
+  while((m=bareRe.exec(text))){
+    const cur = S.s.smart ? (parseNum(m[0])>=1000?"IDR":"CNY") : S.s.def;
+    add(m[0], cur, false);
+  }
+  return [...found.values()]
+    .filter(c => c.value<=5e7 && !(!c.explicit && c.value>=1900 && c.value<=2100 && String(Math.round(c.value)).length===4))
+    .sort((a,b)=> (b.explicit-a.explicit) || (b.value-a.value))
+    .slice(0,4);
+}
+function sheetPhoto(file){
+  const url = URL.createObjectURL(file);
+  showSheet("Add from photo", `
+    <img class="photo-thumb" src="${url}" alt="Receipt">
+    <div class="photo-status" id="pStatus"><span class="spin"></span>Reading the receipt…</div>
+    <div id="pBody"></div>
+  `, `<button class="btn sec" data-close>Cancel</button>`);
+
+  const finish = (bodyHTML, cands, text) => {
+    const status=$("#pStatus"); if(status) status.remove();
+    const body=$("#pBody"); if(!body) return;    // sheet already closed
+    body.innerHTML = bodyHTML;
+    if(cands) body.querySelectorAll("[data-i]").forEach(b=>{
+      b.onclick=()=>{ const c=cands[+b.dataset.i]; closeSheet(); sheetAdd(null, {amt:c.value, cur:c.cur, note:"receipt"}); };
+    });
+    const foot=$("#sheetFoot");
+    if(foot){
+      foot.innerHTML = `<button class="btn sec" data-close>Close</button><button class="btn pri" id="pManual">Enter manually</button>`;
+      $("#pManual").onclick=()=>{ closeSheet(); sheetAdd(null); };
+    }
+  };
+
+  loadTesseract()
+    .then(Tesseract => Tesseract.createWorker("eng"))
+    .then(worker => worker.recognize(file).then(res => worker.terminate().then(()=>res)))
+    .then(({data}) => {
+      const text = data.text || "";
+      const cands = extractMoneyCandidates(text);
+      if(cands.length){
+        finish(`<p style="margin:0 0 4px;color:var(--muted);font-size:13px;font-weight:600">Tap the right amount:</p>
+          <div class="photo-cands">${cands.map((c,i)=>`<button data-i="${i}">${esc(fmt(c.value,c.cur))}</button>`).join("")}</div>
+          <details class="photo-raw"><summary>Recognized text</summary><pre>${esc(text.trim()||"(nothing readable)")}</pre></details>`, cands, text);
+      }else{
+        finish(`<p class="photo-none">Couldn't find a clear amount in this photo.</p>
+          <details class="photo-raw"><summary>Recognized text</summary><pre>${esc(text.trim()||"(nothing readable)")}</pre></details>`, null, text);
+      }
+    })
+    .catch(err => {
+      const msg = err&&err.message==="load-failed" ? "Couldn't load the receipt reader — check your connection." : "Couldn't read this photo — try a clearer one, or enter it manually.";
+      finish(`<p class="photo-none">${esc(msg)}</p>`, null, "");
+    });
 }
 
 /* ---- bulk paste ---- */
@@ -1250,6 +1334,11 @@ async function download(name, text, mime){
   document.body.appendChild(a); a.click();
   setTimeout(()=>{ URL.revokeObjectURL(u); a.remove(); },500);
 }
+$("#photoIn").onchange = e => {
+  const f=e.target.files[0]; if(!f) return;
+  sheetPhoto(f);
+  e.target.value="";
+};
 $("#fileIn").onchange = e => {
   const f=e.target.files[0]; if(!f) return;
   const rd=new FileReader();
@@ -1363,7 +1452,10 @@ $("#btnSettings").innerHTML = ico("cog");
 $("#btnAdd").onclick = ()=>openSheet("add");
 $("#btnSettings").onclick = ()=>go("more");
 document.querySelectorAll("[data-close]").forEach(b=>{ b.innerHTML=ico("x"); b.onclick=closeSheet; });
-ovl().addEventListener("click", e=>{ if(e.target===ovl()) closeSheet(); });
+// Delegated so it also catches Cancel/Close buttons injected later inside sheet
+// bodies/footers (showSheet() re-renders that HTML fresh each time, so a
+// direct .onclick bound once at boot never reaches them).
+ovl().addEventListener("click", e=>{ if(e.target===ovl() || e.target.closest("[data-close]")) closeSheet(); });
 document.addEventListener("keydown", e=>{
   if(e.key==="Escape") closeSheet();
   if(e.key==="/" && document.activeElement===document.body){ const i=$("#qin"); if(i){ e.preventDefault(); i.focus(); } }
