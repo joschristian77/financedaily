@@ -114,7 +114,8 @@ const DEFAULT_FB = {
 const DEFAULTS = {
   txs: [], tomb: [],
   s: { base:"CNY", def:"CNY", rate:2250, budget:0, budgets:{}, theme:"auto", smart:true,
-       sync:false, fb:DEFAULT_FB, uid:null, lastSync:0 }
+       sync:false, fb:DEFAULT_FB, uid:null, lastSync:0,
+       rateAuto:true, rateUpdated:0, rateSource:"manual" }
 };
 let S = loadState();
 let SYNC = { mod:null, status:"off", msg:"Off", user:null };
@@ -184,6 +185,42 @@ function fmt(v,cur,short){
 }
 const trim = n => (n>=100?Math.round(n):+n.toFixed(1)).toString().replace(/\.0$/,"");
 const fmtB = (v,short) => fmt(v,S.s.base,short);
+
+/**
+ * Best-effort live rate refresh. Silent on failure by design — this app has
+ * to keep working with zero network access (mainland China blocks or
+ * throttles a lot of the open internet), so a fetch failure just means
+ * "keep using whatever rate was last known," never a broken app.
+ */
+let rateFetchInFlight = null;
+async function refreshRate(force){
+  if(!S.s.rateAuto && !force) return;
+  if(rateFetchInFlight) return rateFetchInFlight;
+  const ONE_HOUR = 36e5;
+  if(!force && Date.now()-S.s.rateUpdated < ONE_HOUR) return;
+  rateFetchInFlight = (async()=>{
+    try{
+      const ctrl = new AbortController();
+      const to = setTimeout(()=>ctrl.abort(), 6000);
+      const res = await fetch("https://open.er-api.com/v6/latest/CNY", {signal:ctrl.signal});
+      clearTimeout(to);
+      if(!res.ok) throw new Error("bad status "+res.status);
+      const data = await res.json();
+      const r = data && data.rates && data.rates.IDR;
+      if(!(r>0)) throw new Error("no IDR rate in response");
+      S.s.rate = r;
+      S.s.rateUpdated = Date.now();
+      S.s.rateSource = "live";
+      persist();
+      if(V.tab==="more") draw();
+    }catch(e){
+      // offline, blocked, or the service is down — silently keep the last known rate
+    }finally{
+      rateFetchInFlight = null;
+    }
+  })();
+  return rateFetchInFlight;
+}
 
 /* ============================ dates ============================ */
 const DAY=864e5;
@@ -794,6 +831,12 @@ function monthsChart(months){
 }
 
 /* ---------------- settings ---------------- */
+function rateSubtitle(){
+  if(S.s.rateSource!=="live" || !S.s.rateUpdated) return "Default for new entries — edit a past entry to fix its own conversion";
+  const mins = Math.round((Date.now()-S.s.rateUpdated)/60000);
+  const when = mins<1?"just now" : mins<60?mins+"m ago" : Math.round(mins/60)+"h ago";
+  return "Live · updated "+when;
+}
 function viewMore(){
   const n = S.txs.length;
   const first = n? new Date(Math.min(...S.txs.map(t=>t.ts))) : null;
@@ -806,8 +849,14 @@ function viewMore(){
         <span class="g"><b>Main currency</b><small>Everything is totalled in this</small></span>
         <select id="setBase">${Object.values(CUR).map(c=>`<option value="${c.code}" ${S.s.base===c.code?"selected":""}>${c.sym} ${c.code}</option>`).join("")}</select></div>
       <div class="setrow"><span class="ic">${ico("scale")}</span>
-        <span class="g"><b>Exchange rate</b><small>Default for new entries — edit a past entry to fix its own conversion</small></span>
-        <input id="setRate" inputmode="decimal" value="${S.s.rate}"></div>
+        <span class="g"><b>Exchange rate</b><small>${rateSubtitle()}</small></span>
+        <input id="setRate" inputmode="decimal" value="${trim(+S.s.rate)}"></div>
+      <button class="setrow" id="setRateAuto"><span class="ic">${ico("cloud")}</span>
+        <span class="g"><b>Update automatically</b><small>${S.s.rateAuto?"Checks once an hour when online, otherwise keeps the last known rate":"Off — you set the number yourself"}</small></span>
+        <span class="switch" aria-pressed="${!!S.s.rateAuto}"><i></i></span></button>
+      <button class="setrow" id="setRateNow"><span class="ic">${ico("target")}</span>
+        <span class="g"><b>Check now</b><small>Fetch the current rate right away</small></span>
+        <span class="val" id="rateNowVal">${ico("chevR")}</span></button>
       <button class="setrow" id="setSmart"><span class="ic">${ico("target")}</span>
         <span class="g"><b>Guess the currency</b><small>${S.s.smart?"Under 1,000 → ¥ · 1,000+ → Rp":"Bare numbers use "+CUR[S.s.def].sym+" "+S.s.def}</small></span>
         <span class="switch" aria-pressed="${!!S.s.smart}"><i></i></span></button>
@@ -920,7 +969,16 @@ function wire(root){
   bind("#setBase","onchange",e=>{ S.s.base=e.target.value; commit(); });
   bind("#setDef","onchange",e=>{ S.s.def=e.target.value; commit(); });
   bind("#setTheme","onchange",e=>{ S.s.theme=e.target.value; commit(); });
-  bind("#setRate","oninput",debounce(e=>{ const v=parseNum(e.target.value); if(v>0){ S.s.rate=v; commit({quiet:true}); } },400));
+  bind("#setRate","oninput",debounce(e=>{ const v=parseNum(e.target.value); if(v>0){ S.s.rate=v; S.s.rateSource="manual"; commit(); } },400));
+  bind("#setRateAuto","onclick",()=>{ S.s.rateAuto=!S.s.rateAuto; commit(); if(S.s.rateAuto) refreshRate(true); });
+  bind("#setRateNow","onclick",async(e)=>{
+    const val=root.querySelector("#rateNowVal");
+    val.innerHTML = `<span class="spin"></span>`;
+    const before = S.s.rateUpdated;
+    await refreshRate(true);
+    draw();
+    if(V.tab==="more") toast(S.s.rateUpdated>before ? "Rate updated" : "Couldn't reach the rate service — kept the current number");
+  });
   bind("#setSmart","onclick",()=>{ S.s.smart=!S.s.smart; commit(); });
   bind("#setSync","onclick",toggleSync);
 }
@@ -1319,3 +1377,8 @@ if(S.s.sync && S.s.fb) startSync(false);
 if("serviceWorker" in navigator && location.protocol.startsWith("http")){
   window.addEventListener("load", ()=>navigator.serviceWorker.register("sw.js").catch(()=>{}));
 }
+
+refreshRate();
+document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) refreshRate(); });
+window.addEventListener("online", ()=>refreshRate());
+setInterval(refreshRate, 36e5);
