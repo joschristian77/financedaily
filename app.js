@@ -1372,7 +1372,43 @@ $("#nav").addEventListener("click", e=>{ const b=e.target.closest("[data-tab]");
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", ()=>{ if(S.s.theme==="auto") applyTheme(); });
 window.addEventListener("beforeunload", ()=>{ clearTimeout(saveTimer); try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} });
 
+/**
+ * Lets an iOS/Android Shortcut (or any external caller) log a transaction by
+ * just opening a URL — no need to open the app UI first.
+ *   .../?add=dinner+food+20rmb
+ *   .../?add=lunch+25rmb%0Akopi+18rb          (newline-separated = several at once)
+ * Bad/unparseable text is never dropped silently: it's dumped into the
+ * quick-add box so the visit isn't wasted, just needs a manual fix.
+ */
+function handleAddParam(){
+  const params = new URLSearchParams(location.search);
+  const raw = params.get("add") || params.get("q");
+  if(raw===null) return;
+  history.replaceState(null, "", location.pathname + location.hash);   // don't re-add on refresh
+
+  const lines = raw.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+  const rows = lines.map(line => ({line, p: parse(line)}));
+  const good = rows.filter(r=>r.p.ok);
+  const bad = rows.filter(r=>!r.p.ok);
+
+  if(good.length){
+    const added = good.map(r => addTx(r.p));
+    V.anchor = added[added.length-1].ts;
+    commit();
+    const summary = added.length===1
+      ? `${fmt(added[0].amt,added[0].cur)} · ${CATBY[added[0].cat].label}`
+      : `Added ${added.length} transactions`;
+    toast(summary, "Undo", ()=>{ added.forEach(t=>removeTx(t.id)); commit(); });
+  }
+  if(bad.length){
+    const qin = $("#qin");
+    if(qin){ qin.value = bad.map(r=>r.line).join(" "); qaPreview(); qin.focus(); }
+    if(!good.length) toast("Couldn't find an amount — check the text below");
+  }
+}
+
 draw();
+handleAddParam();
 if(S.s.sync && S.s.fb) startSync(false);
 if("serviceWorker" in navigator && location.protocol.startsWith("http")){
   window.addEventListener("load", ()=>navigator.serviceWorker.register("sw.js").catch(()=>{}));
