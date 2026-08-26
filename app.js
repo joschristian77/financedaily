@@ -1472,13 +1472,8 @@ window.addEventListener("beforeunload", ()=>{ clearTimeout(saveTimer); try{ loca
  * Bad/unparseable text is never dropped silently: it's dumped into the
  * quick-add box so the visit isn't wasted, just needs a manual fix.
  */
-function handleAddParam(){
-  const params = new URLSearchParams(location.search);
-  const raw = params.get("add") || params.get("q");
-  if(raw===null) return;
-  history.replaceState(null, "", location.pathname + location.hash);   // don't re-add on refresh
-
-  const lines = raw.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+function addFromText(raw){
+  const lines = String(raw||"").split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
   const rows = lines.map(line => ({line, p: parse(line)}));
   const good = rows.filter(r=>r.p.ok);
   const bad = rows.filter(r=>!r.p.ok);
@@ -1497,6 +1492,26 @@ function handleAddParam(){
     if(qin){ qin.value = bad.map(r=>r.line).join(" "); qaPreview(); qin.focus(); }
     if(!good.length) toast("Couldn't find an amount — check the text below");
   }
+  return good.length>0;
+}
+function handleAddParam(){
+  const params = new URLSearchParams(location.search);
+  const raw = params.get("add") || params.get("q");
+  const fromClipboard = params.has("addFromClipboard");
+  if(raw===null && !fromClipboard) return;
+  history.replaceState(null, "", location.pathname + location.hash);   // don't re-add on refresh
+
+  if(raw!==null){ addFromText(raw); return; }
+
+  // Shortcuts' "Open URLs" can't carry raw multi-line OCR text safely (it insists
+  // the whole thing look like a valid URL) — so a Share Sheet shortcut copies the
+  // recognized text to the clipboard instead, and opens this plain, always-valid
+  // URL; we just read the clipboard back out here.
+  navigator.clipboard.readText().then(text=>{
+    if(!addFromText(text)) toast("Clipboard didn't have a readable amount");
+  }).catch(()=>{
+    toast("Couldn't read the clipboard — allow Paste access if asked, then try again");
+  });
 }
 
 draw();
