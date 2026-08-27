@@ -1061,7 +1061,7 @@ function sheetAdd(editId, prefill){
     id: t?t.id:null,
     type: t?t.type:"expense",
     cur: t?t.cur:(prefill&&prefill.cur)||(S.s.smart?S.s.def:S.s.def),
-    cat: t?t.cat:"other",
+    cat: t?t.cat:((prefill&&prefill.cat)||"other"),
     ts: t?t.ts:(V.qaDate||today()),
     rate: t&&t.rate>0 ? t.rate : rate()
   };
@@ -1153,29 +1153,103 @@ function loadTesseract(){
   }
   return loadTesseract._p;
 }
-/** Pull plausible money amounts out of raw OCR text — explicit "Rp"/"¥" first, then bare grouped numbers. */
-function extractMoneyCandidates(text){
-  const found = new Map();
-  const add = (raw, cur, explicit) => {
-    const v = parseNum(raw);
-    if(!(v>0)) return;
-    const key = Math.round(v*100)+cur;
-    if(!found.has(key)) found.set(key, {value:v, cur, explicit});
-  };
-  let m;
-  const rpRe = /\brp\.?\s?(\d[\d.,]*)/gi;
-  while((m=rpRe.exec(text))) add(m[1], "IDR", true);
-  const cnyRe = /(?:¥|rmb|cny)\s?(\d[\d.,]*)/gi;
-  while((m=cnyRe.exec(text))) add(m[1], "CNY", true);
-  const bareRe = /\b\d{1,3}(?:[.,]\d{3})+\b|\b\d{4,}\b/g;
-  while((m=bareRe.exec(text))){
-    const cur = S.s.smart ? (parseNum(m[0])>=1000?"IDR":"CNY") : S.s.def;
-    add(m[0], cur, false);
+/* ---- receipt understanding ----
+   A receipt is one transaction, not one per line. Every number on it competes
+   to be "the amount"; these patterns decide which one actually is. */
+/* "Total price" is the pre-discount subtotal; "total payment/paid" is what actually
+   left your pocket. They often both appear, so the final one has to outrank it. */
+const RCPT_SUBTOTAL = /\b(?:sub\s*-?\s*total|total\s*(?:price|harga|belanja|item|barang))\b|小计|商品金额/i;
+const RCPT_FINAL = /\b(?:grand\s*total|total|jumlah|kamu\s*membayar|you\s*paid|amount\s*paid|dibayar|nominal)\b|合计|总计|总额|实付|应付|实收|付款金额|支付金额/i;
+const RCPT_TOTAL = /\b(?:grand\s*total|total|jumlah|kamu\s*membayar|you\s*paid|amount\s*paid|dibayar|nominal|sub\s*-?\s*total)\b|合计|总计|小计|实付|应付/i;
+const RCPT_DISCOUNT = /\b(?:disc(?:ount)?s?|diskon|potongan|promos?|vouchers?|cashback|hemat|rewards?|poins?|points?)\b/i;
+const RCPT_FEE = /\b(?:fee|biaya|ongkir|ongkos|delivery|handling|admin|layanan|service|pajak|tax|ppn|tip)\b/i;
+const RCPT_IDLIKE = /\b(?:id|no|nomor|number|ref|reference|invoice|va|rek|rekening|account|order|trx|transaksi|transaction)\b\s*[:#.]?\s*[a-z-]*$/i;
+
+function looksLikeReceipt(text){
+  const lines = String(text||"").split(/\r?\n/).filter(l=>l.trim());
+  return lines.length >= 4 || /\b(?:total|jumlah|struk|resi|receipt|invoice|bukti\s*transaksi)\b/i.test(text);
+}
+
+/** Every money-looking number in the text, scored by how likely it is the real total. */
+function receiptCandidates(text){
+  const lines = String(text||"").split(/\r?\n/).map(l=>l.trim());
+  const found = [];
+  lines.forEach((line, i) => {
+    const re = /(rp\.?|idr|¥|rmb|cny|元)?\s*(-?\d[\d.,]*)\s*(rb|ribu|jt|juta|wan|万)?/gi;
+    let m;
+    while((m = re.exec(line))){
+      const sym = m[1], digits = m[2], mult = m[3];
+      if(!digits || !/\d/.test(digits)) continue;
+      const before0 = line.slice(0, m.index);
+      // "-Rp66.700" puts the minus before the symbol, outside the match
+      const neg = digits.trim().startsWith("-") || /[-−]\s*$/.test(before0);
+      const nDigits = digits.replace(/\D/g, "").length;
+      let cur = sym ? CUR_WORDS[sym.toLowerCase().replace(/\.$/, "")] : null;
+      let factor = 1;
+      if(mult){
+        const k = mult.toLowerCase();
+        if(MULT[k]){
+          factor = MULT[k];
+          if(IDR_MULT.has(k)) cur = cur || "IDR";
+          else if(CNY_MULT.has(k)) cur = cur || "CNY";
+        }
+      }
+      let v = parseNum(digits.replace(/^-/, ""));
+      if(v===null) continue;
+      v *= factor;
+      if(!(v>0) || v > 5e8) continue;
+
+      // A bare label on its own line describes the number on the next line — but only
+      // when this line is just the value; a line with its own label keeps its own meaning.
+      const before = before0;
+      const prev = i>0 ? lines[i-1] : "";
+      const valueOnly = before.replace(/[^a-z一-鿿]/gi, "").length <= 2;
+      const ctx = (valueOnly && !/\d/.test(prev)) ? prev + " " + line : line;
+
+      let score = 0;
+      if(RCPT_SUBTOTAL.test(ctx)) score += 60;
+      else if(RCPT_FINAL.test(ctx)) score += 150;
+      score += i * 0.5;                                      // totals sit near the bottom
+      if(sym) score += 30;
+      if(RCPT_DISCOUNT.test(ctx)) score -= 90;
+      if(RCPT_FEE.test(ctx)) score -= 50;
+      if(neg) score -= 70;                                   // a deduction, not the total
+      if(nDigits >= 9) score -= 150;                         // transaction / account numbers
+      if(RCPT_IDLIKE.test(before)) score -= 150;
+      if(/(?:订单号|交易号|单号|流水号|卡号)\s*[:：]?\s*$/.test(before)) score -= 150;
+      if(/\*{3,}/.test(line)) score -= 120;                  // masked account numbers
+      if(/\d{1,2}:\d{2}\b/.test(line)) score -= 80;          // clock times (colon only — 38.50 is money)
+      if(/\b(?:jan|feb|mar|apr|may|mei|jun|jul|aug|agu|sep|oct|okt|nov|dec|des)\b/i.test(line)) score -= 80;
+      found.push({ value:v, cur: cur || (S.s.smart ? (v>=1000?"IDR":"CNY") : S.s.def), score });
+    }
+  });
+  const best = new Map();
+  for(const c of found){
+    const key = Math.round(c.value*100) + c.cur;
+    if(!best.has(key) || c.score > best.get(key).score) best.set(key, c);
   }
-  return [...found.values()]
-    .filter(c => c.value<=5e7 && !(!c.explicit && c.value>=1900 && c.value<=2100 && String(Math.round(c.value)).length===4))
-    .sort((a,b)=> (b.explicit-a.explicit) || (b.value-a.value))
-    .slice(0,4);
+  return [...best.values()].sort((a,b)=> b.score - a.score || b.value - a.value).slice(0,5);
+}
+
+/** Amount + merchant + category for a whole receipt, as one transaction. */
+function parseReceipt(text){
+  const cands = receiptCandidates(text);
+  const lines = String(text||"").split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+  const boiler = /^(?:transaction|transaksi|delivery|payment|pembayaran|order|pesanan|bukti|struk|resi|receipt|detail|rincian|dari|from|ke|to|metode|method|waktu|time|status|help|bantuan|report|about|connect|hi\b|thanks|terima)/i;
+  let note = "";
+  for(const l of lines){
+    if(l.length>=3 && l.length<=48 && !/^\W*\d/.test(l) &&
+       !RCPT_TOTAL.test(l) && !RCPT_DISCOUNT.test(l) && !RCPT_FEE.test(l) && !boiler.test(l)){ note = l; break; }
+  }
+  if(!note && lines.length) note = lines[0].split(/\s+/).slice(0,4).join(" ");   // fall back to the header
+  const flat = text.toLowerCase().replace(/[^a-z一-鿿]/g, "");
+  let cat = null;
+  for(const c of CATS){
+    if(c.kind!=="expense") continue;
+    if(c.kw.split(/\s+/).some(k=>k.length>3 && flat.includes(k))){ cat=c.id; break; }
+  }
+  const best = cands[0] || null;
+  return { best, cands, note: note.slice(0,40), cat: cat||"other", confident: !!best && best.score >= 100 };
 }
 function sheetPhoto(file){
   const url = URL.createObjectURL(file);
@@ -1190,25 +1264,27 @@ function sheetPhoto(file){
     const body=$("#pBody"); if(!body) return;    // sheet already closed
     body.innerHTML = bodyHTML;
     if(cands) body.querySelectorAll("[data-i]").forEach(b=>{
-      b.onclick=()=>{ const c=cands[+b.dataset.i]; closeSheet(); sheetAdd(null, {amt:c.value, cur:c.cur, note:"receipt"}); };
+      b.onclick=()=>{ const c=cands[+b.dataset.i]; closeSheet(); sheetAdd(null, {amt:c.value, cur:c.cur, note:prefillNote, cat:prefillCat}); };
     });
     const foot=$("#sheetFoot");
     if(foot){
       foot.innerHTML = `<button class="btn sec" data-close>Close</button><button class="btn pri" id="pManual">Enter manually</button>`;
-      $("#pManual").onclick=()=>{ closeSheet(); sheetAdd(null); };
+      $("#pManual").onclick=()=>{ closeSheet(); sheetAdd(null, {note:prefillNote, cat:prefillCat}); };
     }
   };
+  let prefillNote="", prefillCat=null;
 
   loadTesseract()
     .then(Tesseract => Tesseract.createWorker("eng"))
     .then(worker => worker.recognize(file).then(res => worker.terminate().then(()=>res)))
     .then(({data}) => {
       const text = data.text || "";
-      const cands = extractMoneyCandidates(text);
-      if(cands.length){
+      const r = parseReceipt(text);
+      prefillNote = r.note; prefillCat = r.cat;
+      if(r.cands.length){
         finish(`<p style="margin:0 0 4px;color:var(--muted);font-size:13px;font-weight:600">Tap the right amount:</p>
-          <div class="photo-cands">${cands.map((c,i)=>`<button data-i="${i}">${esc(fmt(c.value,c.cur))}</button>`).join("")}</div>
-          <details class="photo-raw"><summary>Recognized text</summary><pre>${esc(text.trim()||"(nothing readable)")}</pre></details>`, cands, text);
+          <div class="photo-cands">${r.cands.map((c,i)=>`<button data-i="${i}">${esc(fmt(c.value,c.cur))}</button>`).join("")}</div>
+          <details class="photo-raw"><summary>Recognized text</summary><pre>${esc(text.trim()||"(nothing readable)")}</pre></details>`, r.cands, text);
       }else{
         finish(`<p class="photo-none">Couldn't find a clear amount in this photo.</p>
           <details class="photo-raw"><summary>Recognized text</summary><pre>${esc(text.trim()||"(nothing readable)")}</pre></details>`, null, text);
@@ -1473,6 +1549,9 @@ window.addEventListener("beforeunload", ()=>{ clearTimeout(saveTimer); try{ loca
  * quick-add box so the visit isn't wasted, just needs a manual fix.
  */
 function addFromText(raw){
+  // A shared receipt is ONE transaction — never one per line, or a transaction
+  // ID becomes an "amount" and every label becomes its own entry.
+  if(looksLikeReceipt(raw)) return addFromReceipt(raw);
   const lines = String(raw||"").split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
   const rows = lines.map(line => ({line, p: parse(line)}));
   const good = rows.filter(r=>r.p.ok);
@@ -1493,6 +1572,30 @@ function addFromText(raw){
     if(!good.length) toast("Couldn't find an amount — check the text below");
   }
   return good.length>0;
+}
+/** Add a shared receipt: straight in when the total is unambiguous, otherwise ask. */
+function addFromReceipt(text){
+  const r = parseReceipt(text);
+  if(r.confident){
+    const t = addTx({ amt:r.best.value, cur:r.best.cur, type:"expense",
+                      cat:r.cat, note:r.note, ts:V.qaDate||today() });
+    V.anchor = t.ts;
+    commit();
+    toast(`${fmt(t.amt,t.cur)} · ${CATBY[t.cat].label}`, "Undo", ()=>{ removeTx(t.id); commit(); });
+    return true;
+  }
+  showSheet("Check this receipt", `
+    <p style="margin:0 0 4px;color:var(--muted);font-size:13px;font-weight:600">
+      ${r.cands.length ? "Couldn't tell which number is the total — tap the right one:"
+                       : "No amount found in this receipt."}</p>
+    ${r.cands.length ? `<div class="photo-cands">${r.cands.map((c,i)=>`<button data-i="${i}">${esc(fmt(c.value,c.cur))}</button>`).join("")}</div>` : ""}
+    <details class="photo-raw"><summary>Shared text</summary><pre>${esc(String(text).trim()||"(empty)")}</pre></details>
+  `, `<button class="btn sec" data-close>Close</button><button class="btn pri" id="rManual">Enter manually</button>`);
+  $("#sheetBody").querySelectorAll("[data-i]").forEach(b=>{
+    b.onclick=()=>{ const c=r.cands[+b.dataset.i]; closeSheet(); sheetAdd(null, {amt:c.value, cur:c.cur, note:r.note, cat:r.cat}); };
+  });
+  $("#rManual").onclick=()=>{ closeSheet(); sheetAdd(null, {note:r.note, cat:r.cat}); };
+  return true;
 }
 function handleAddParam(){
   const params = new URLSearchParams(location.search);
