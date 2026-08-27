@@ -1506,12 +1506,16 @@ function handleAddParam(){
   // Shortcuts' "Open URLs" can't carry raw multi-line OCR text safely (it insists
   // the whole thing look like a valid URL) — so a Share Sheet shortcut copies the
   // recognized text to the clipboard instead, and opens this plain, always-valid
-  // URL; we just read the clipboard back out here.
-  navigator.clipboard.readText().then(text=>{
+  // URL. iOS Safari refuses to read the clipboard from page-load code with no
+  // gesture behind it — even though the page load itself came from a real tap
+  // in Shortcuts, that's a different context as far as WebKit's clipboard
+  // permission is concerned — so this needs one more real in-page tap.
+  const readClipboard = () => navigator.clipboard.readText().then(text=>{
     if(!addFromText(text)) toast("Clipboard didn't have a readable amount");
   }).catch(()=>{
-    toast("Couldn't read the clipboard — allow Paste access if asked, then try again");
+    toast("Couldn't read the clipboard — try the Paste button again", "Retry", readClipboard);
   });
+  toast("Receipt copied — tap Paste to add it", "Paste", readClipboard);
 }
 
 draw();
