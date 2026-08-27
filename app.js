@@ -69,7 +69,7 @@ const CNY_MULT = new Set(["w","wan","万"]);
 
 /* ============================ categories ============================ */
 const CATS = [
-  {id:"food", label:"Food & Drink", icon:"utensils", color:"#ff9500", kind:"expense", kw:"dinner lunch breakfast brunch supper food meal eat eating snack snacks coffee kopi cafe kafe tea teh makan makanan sarapan nasi mie bakso sate soto ayam warung warteg restoran restaurant resto milktea boba bubble jajan jajanan minum minuman drink beer bir wine juice jus roti bread cake kue eskrim icecream pizza burger sushi ramen hotpot bbq chifan waimai takeout takeaway delivery gofood grabfood shopeefood meituan eleme luckin starbucks mcd mcdonalds kfc padang gorengan bakmi dimsum kantin katering catering buffet mala malatang shaokao zaocan wucan wancan naicha kaifei"},
+  {id:"food", label:"Food & Drink", icon:"utensils", color:"#ff9500", kind:"expense", kw:"dinner lunch breakfast brunch supper food meal eat eating snack snacks coffee kopi cafe kafe tea teh makan makanan sarapan nasi mie bakso sate soto ayam warung warteg restoran restaurant resto milktea boba bubble jajan jajanan minum minuman drink beer bir wine juice jus roti bread cake kue eskrim icecream pizza burger sushi ramen hotpot bbq chifan waimai takeout takeaway delivery gofood grabfood shopeefood meituan eleme luckin starbucks mcd mcdonalds kfc padang gorengan bakmi dimsum kantin katering catering buffet mala malatang shaokao zaocan wucan wancan naicha kaifei warmindo warkop kedai depot angkringan lesehan geprek seblak martabak batagor siomay pempek pecel nasgor bubur rawon rendang kwetiau ketoprak gadogado penyetan lalapan burjo"},
   {id:"groceries", label:"Groceries", icon:"cart", color:"#00d68f", kind:"expense", kw:"groceries grocery supermarket market pasar belanja sayur sayuran buah daging telur beras minyak gula susu milk indomaret alfamart superindo hypermart giant carrefour lotte walmart hema freshippo chaoshi mart minimarket sembako bulanan dapur meiyijia"},
   {id:"transport", label:"Transport", icon:"car", color:"#2f80ff", kind:"expense", kw:"taxi taksi grab gojek gocar goride ojek ojol bluebird bus busway train kereta krl mrt lrt transjakarta didi metro subway tram bensin pertalite pertamax solar fuel petrol parkir parking toll tol angkot becak sepeda bike ebike scooter motor gaotie ditie chuzu chuzuche uber lyft carpool ongkos transport transportasi servis oli tambal gonggong huoche feiji"},
   {id:"shopping", label:"Shopping", icon:"bag", color:"#ff4d94", kind:"expense", kw:"shopping shop baju clothes clothing shirt kaos kemeja shoes sepatu sandal celana jaket dress tas bag dompet jam watch aksesoris taobao tmall jd pinduoduo pdd shopee tokopedia tokped lazada bukalapak blibli amazon tiktokshop elektronik gadget hp phone handphone laptop tablet headphone earphone charger kabel keyboard mouse furniture furnitur perabot ikea decor dekorasi xiaomi"},
@@ -1235,19 +1235,36 @@ function receiptCandidates(text){
 function parseReceipt(text){
   const cands = receiptCandidates(text);
   const lines = String(text||"").split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
-  const boiler = /^(?:transaction|transaksi|delivery|payment|pembayaran|order|pesanan|bukti|struk|resi|receipt|detail|rincian|dari|from|ke|to|metode|method|waktu|time|status|help|bantuan|report|about|connect|hi\b|thanks|terima)/i;
+  const boiler = /^(?:transaction|transaksi|delivery|payment|pembayaran|order|pesanan|bukti|struk|resi|receipt|detail|rincian|dari|from|ke|to|metode|method|waktu|time|status|help|bantuan|report|about|connect|hi\b|thanks|terima|qris|secured|protection|acquirer|terminal|merchant|group|success|berhasil|selesai)/i;
+
+  // "Payment to X" / "Merchant Name: X" names the shop far better than any stray line
+  const merchantRe = /^(?:payment\s+to|pay\s+to|bayar\s+ke(?:pada)?|kepada|penerima|merchant\s+name|nama\s+merchant|toko|kepada)\s*[:\-]?\s*(.+)$/i;
+  const merchantLabel = /^(?:merchant\s+name|nama\s+merchant|penerima|payment\s+to|pay\s+to)\s*[:\-]?$/i;
   let note = "";
-  for(const l of lines){
-    if(l.length>=3 && l.length<=48 && !/^\W*\d/.test(l) &&
-       !RCPT_TOTAL.test(l) && !RCPT_DISCOUNT.test(l) && !RCPT_FEE.test(l) && !boiler.test(l)){ note = l; break; }
+  for(let i=0;i<lines.length;i++){
+    const m = lines[i].match(merchantRe);
+    if(m && m[1] && m[1].trim().length>=3){ note = m[1].trim(); break; }
+    if(merchantLabel.test(lines[i]) && lines[i+1] && lines[i+1].length>=3){ note = lines[i+1].trim(); break; }
+  }
+  if(!note){
+    for(const l of lines){
+      if(l.length>=3 && l.length<=48 && !/^\W*\d/.test(l) &&
+         !RCPT_TOTAL.test(l) && !RCPT_DISCOUNT.test(l) && !RCPT_FEE.test(l) && !boiler.test(l)){ note = l; break; }
+    }
   }
   if(!note && lines.length) note = lines[0].split(/\s+/).slice(0,4).join(" ");   // fall back to the header
-  const flat = text.toLowerCase().replace(/[^a-z一-鿿]/g, "");
-  let cat = null;
-  for(const c of CATS){
-    if(c.kind!=="expense") continue;
-    if(c.kw.split(/\s+/).some(k=>k.length>3 && flat.includes(k))){ cat=c.id; break; }
-  }
+
+  // The merchant name says what this was; the rest of the page is full of
+  // payment-processor names that would otherwise win (e.g. "Acquirer: Gopay").
+  const catFrom = src => {
+    const flat = String(src).toLowerCase().replace(/[^a-z一-鿿]/g, "");
+    for(const c of CATS){
+      if(c.kind!=="expense") continue;
+      if(c.kw.split(/\s+/).some(k=>k.length>3 && flat.includes(k))) return c.id;
+    }
+    return null;
+  };
+  const cat = catFrom(note) || catFrom(text);
   const best = cands[0] || null;
   return { best, cands, note: note.slice(0,40), cat: cat||"other", confident: !!best && best.score >= 100 };
 }
