@@ -53,13 +53,27 @@ export async function connect(config, opts){
   return { uid: user.uid, email: user.email || null };
 }
 
+/** A persisted session loads from storage asynchronously — checking currentUser
+ *  before that finishes makes an already-signed-in user look signed out. */
+function authReady(authMod){
+  if(typeof auth.authStateReady === "function") return auth.authStateReady();
+  return new Promise(resolve => {
+    const stop = authMod.onAuthStateChanged(auth, () => { stop(); resolve(); });
+  });
+}
+
 async function signIn(authMod, interactive, say){
+  await authReady(authMod);
   if(auth.currentUser) return auth.currentUser;
 
   const redirected = await authMod.getRedirectResult(auth).catch(()=>null);
   if(redirected && redirected.user) return redirected.user;
 
-  if(!interactive) return null;
+  if(!interactive){
+    const e = new Error("Not signed in on this install");
+    e.code = "needs-signin";
+    throw e;
+  }
 
   say("connecting","Waiting for sign-in…");
   const provider = new authMod.GoogleAuthProvider();

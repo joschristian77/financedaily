@@ -1,5 +1,5 @@
 /* Offline shell. Bump CACHE when you change any of the files below. */
-const CACHE = "duit-v15";
+const CACHE = "duit-v16";
 const SHELL = ["./", "./index.html", "./app.css", "./app.js", "./manifest.webmanifest", "./icon.svg"];
 
 self.addEventListener("install", e => {

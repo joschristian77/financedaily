@@ -345,6 +345,7 @@ svg{display:block}
 .syncdot{width:9px;height:9px;border-radius:99px;flex:none}
 .syncdot.on{background:var(--inc)} .syncdot.off{background:var(--faint)}
 .syncdot.err{background:var(--exp)} .syncdot.busy{background:var(--warn)}
+.syncdot.warn{background:var(--warn)}
 
 /* ---------------- bottom nav ---------------- */
 .nav{position:fixed;left:0;right:0;bottom:0;z-index:50;padding:0 12px calc(var(--safe-b) + 10px);pointer-events:none}

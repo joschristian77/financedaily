@@ -842,7 +842,7 @@ function rateSubtitle(){
 function viewMore(){
   const n = S.txs.length;
   const first = n? new Date(Math.min(...S.txs.map(t=>t.ts))) : null;
-  const dotClass = {on:"on", off:"off", error:"err", connecting:"busy", syncing:"busy"}[SYNC.status]||"off";
+  const dotClass = {on:"on", off:"off", error:"err", signin:"warn", connecting:"busy", syncing:"busy"}[SYNC.status]||"off";
   return `
   <div class="setgrp">
     <span class="eyebrow">Money</span>
@@ -1501,6 +1501,8 @@ function setSyncStatus(status, msg){
   else $("#pgSub").textContent = V.tab==="more" ? msg : monthLabel(V.anchor);
 }
 async function toggleSync(){
+  // Sync on but not connected? Tapping should retry the sign-in, not switch it off.
+  if(S.s.sync && (SYNC.status==="signin" || SYNC.status==="error")) return startSync(true);
   if(S.s.sync){
     S.s.sync=false;
     if(SYNC.mod) try{ await SYNC.mod.disconnect(); }catch(e){}
@@ -1526,7 +1528,8 @@ async function startSync(interactive){
     queueSync();
   }catch(err){
     console.error(err);
-    setSyncStatus("error", (err&&err.message) ? String(err.message).slice(0,60) : "Couldn't connect");
+    if(err && err.code==="needs-signin") setSyncStatus("signin", "Tap here to sign in on this device");
+    else setSyncStatus("error", (err&&err.message) ? String(err.message).slice(0,60) : "Couldn't connect");
   }
 }
 /** Last-write-wins on `up`; tombstones delete. Local stays authoritative for the UI. */
