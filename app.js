@@ -1170,9 +1170,45 @@ function looksLikeReceipt(text){
   return lines.length >= 4 || /\b(?:total|jumlah|struk|resi|receipt|invoice|bukti\s*transaksi)\b/i.test(text);
 }
 
+/**
+ * Two-column receipts (GoFood, many apps) OCR as ALL the labels, then ALL the
+ * values — so "Total payment" and its number never share a line, or even sit
+ * near each other. Pair a run of value-only lines with the labels just above it,
+ * in order, so each number gets its real label back.
+ */
+const MONEYISH = /(?:rp\.?|idr|¥|rmb|cny|元)\s*-?\d[\d.,]*|-?\d{1,3}(?:[.,]\d{3})+/i;
+function columnPairs(lines){
+  const pairs = new Map();
+  const isValue = s => MONEYISH.test(s) &&
+    s.replace(/(?:rp\.?|idr|¥|rmb|cny|元)/gi, "").replace(/[-−\d.,\s]/g, "").length <= 2;
+  const isLabel = s => !MONEYISH.test(s) && /[a-z一-鿿]{3,}/i.test(s);
+  let i = 0;
+  while(i < lines.length){
+    if(!isValue(lines[i])){ i++; continue; }
+    const vals = [];
+    let j = i;
+    while(j < lines.length){
+      if(isValue(lines[j])) vals.push(j++);
+      else if(!lines[j]) j++;                       // blank lines sit between columns
+      else break;
+    }
+    if(vals.length >= 2){
+      const labs = [];
+      for(let k = i-1; k >= 0 && labs.length < vals.length; k--){
+        if(isValue(lines[k])) break;
+        if(isLabel(lines[k])) labs.unshift(lines[k]);
+      }
+      if(labs.length === vals.length) vals.forEach((li, n) => pairs.set(li, labs[n]));
+    }
+    i = j;
+  }
+  return pairs;
+}
+
 /** Every money-looking number in the text, scored by how likely it is the real total. */
 function receiptCandidates(text){
   const lines = String(text||"").split(/\r?\n/).map(l=>l.trim());
+  const paired = columnPairs(lines);
   const found = [];
   lines.forEach((line, i) => {
     const re = /(rp\.?|idr|¥|rmb|cny|元)?\s*(-?\d[\d.,]*)\s*(rb|ribu|jt|juta|wan|万)?/gi;
@@ -1204,7 +1240,9 @@ function receiptCandidates(text){
       const before = before0;
       const prev = i>0 ? lines[i-1] : "";
       const valueOnly = before.replace(/[^a-z一-鿿]/gi, "").length <= 2;
-      const ctx = (valueOnly && !/\d/.test(prev)) ? prev + " " + line : line;
+      const ctx = paired.has(i) ? paired.get(i)
+                : (valueOnly && !/\d/.test(prev)) ? prev + " " + line
+                : line;
 
       let score = 0;
       if(RCPT_SUBTOTAL.test(ctx)) score += 60;
@@ -1235,11 +1273,11 @@ function receiptCandidates(text){
 function parseReceipt(text){
   const cands = receiptCandidates(text);
   const lines = String(text||"").split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
-  const boiler = /^(?:transaction|transaksi|delivery|payment|pembayaran|order|pesanan|bukti|struk|resi|receipt|detail|rincian|dari|from|ke|to|metode|method|waktu|time|status|help|bantuan|report|about|connect|hi\b|thanks|terima|qris|secured|protection|acquirer|terminal|merchant|group|success|berhasil|selesai)/i;
+  const boiler = /^(?:transaction|transaksi|delivery|payment|pembayaran|order|pesanan|bukti|struk|resi|receipt|detail|rincian|dari|from|ke|to|metode|method|waktu|time|status|help|bantuan|report|about|connect|hi\b|thanks|terima|qris|secured|protection|acquirer|terminal|merchant|group|success|berhasil|selesai|restaurant|purchase|price|harga|location|lokasi|without|tanpa)/i;
 
   // "Payment to X" / "Merchant Name: X" names the shop far better than any stray line
   const merchantRe = /^(?:payment\s+to|pay\s+to|bayar\s+ke(?:pada)?|kepada|penerima|merchant\s+name|nama\s+merchant|toko|kepada)\s*[:\-]?\s*(.+)$/i;
-  const merchantLabel = /^(?:merchant\s+name|nama\s+merchant|penerima|payment\s+to|pay\s+to)\s*[:\-]?$/i;
+  const merchantLabel = /^(?:merchant\s+name|nama\s+merchant|penerima|payment\s+to|pay\s+to|restaurant(?:\s+(?:location|name))?|nama\s+resto(?:ran)?|toko|store)\s*[:\-]?$/i;
   let note = "";
   for(let i=0;i<lines.length;i++){
     const m = lines[i].match(merchantRe);
