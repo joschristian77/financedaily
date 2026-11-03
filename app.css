@@ -261,7 +261,9 @@ svg{display:block}
 
 /* ---------------- controls ---------------- */
 .monthbar{display:flex;align-items:center;gap:8px;margin-top:14px}
-.monthbar .nav{flex:1;display:flex;align-items:center;justify-content:space-between;background:var(--card);
+/* the bottom tab bar is also .nav and sets position:fixed;bottom:0 — without
+   this reset the month navigator gets pinned behind it and is untappable */
+.monthbar .nav{position:static;flex:1;display:flex;align-items:center;justify-content:space-between;background:var(--card);
   border:1px solid var(--line);border-radius:14px;padding:5px;box-shadow:var(--sh)}
 .monthbar .nav button{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;color:var(--muted)}
 .monthbar .nav button:disabled{opacity:.25}
@@ -435,7 +437,7 @@ svg{display:block}
   animation:sp .7s linear infinite;flex:none}
 @keyframes sp{to{transform:rotate(360deg)}}
 
-.monthbar .nav .jump{display:flex;align-items:center;gap:3px;padding:0 8px;height:34px;border-radius:10px;
+.monthbar .nav .jump{flex:1;justify-content:center;white-space:nowrap;display:flex;align-items:center;gap:3px;padding:0 8px;height:34px;border-radius:10px;
   font-size:14.5px;font-weight:800;letter-spacing:-.2px;color:var(--ink)}
 .monthbar .nav .jump svg{width:14px;height:14px;color:var(--muted)}
 .monthbar .nav .jump:active{background:var(--card2)}
