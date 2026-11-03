@@ -38,6 +38,7 @@ const ICON = {
   search:'<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.2-4.2"/>',
   chevL:'<path d="M15 18l-6-6 6-6"/>',
   chevR:'<path d="M9 18l6-6-6-6"/>',
+  chevD:'<path d="M6 9l6 6 6-6"/>',
   x:'<path d="M18 6L6 18M6 6l12 12"/>',
   edit:'<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7.5 18.5 3 20l1.5-4.5z"/>',
   copy:'<rect x="9" y="9" width="12" height="12" rx="2.2"/><path d="M5.5 15H4.5A1.5 1.5 0 0 1 3 13.5v-9A1.5 1.5 0 0 1 4.5 3h9A1.5 1.5 0 0 1 15 4.5v1"/>',
@@ -636,7 +637,7 @@ function monthBarHTML(){
   const atNow = monthStart(V.anchor) >= monthStart(Date.now());
   return `<div class="monthbar"><div class="nav">
     <button data-month="-1" aria-label="Previous month">${ico("chevL")}</button>
-    <b>${monthLabel(V.anchor)}</b>
+    <button class="jump" data-jump aria-label="Pick a month">${monthLabel(V.anchor)}${ico("chevD")}</button>
     <button data-month="1" ${atNow?"disabled":""} aria-label="Next month">${ico("chevR")}</button>
   </div></div>`;
 }
@@ -649,7 +650,7 @@ function periodBarHTML(){
   </div>
   <div class="monthbar"><div class="nav">
     <button data-shift="-1" aria-label="Previous period">${ico("chevL")}</button>
-    <b>${esc(label)}</b>
+    <button class="jump" data-jump aria-label="Pick a month">${esc(label)}${ico("chevD")}</button>
     <button data-shift="1" ${atNow?"disabled":""} aria-label="Next period">${ico("chevR")}</button>
   </div></div>`;
 }
@@ -927,6 +928,7 @@ function wire(root){
   root.querySelectorAll("[data-shift]").forEach(b=>b.onclick=()=>{
     V.anchor = shiftedAnchor(V.scope, V.anchor, +b.dataset.shift); draw();
   });
+  root.querySelectorAll("[data-jump]").forEach(b=>b.onclick=sheetJump);
   root.querySelectorAll("[data-filter]").forEach(b=>b.onclick=()=>{ V.cat=b.dataset.filter||null; draw(); });
   root.querySelectorAll("[data-cat]").forEach(b=>b.onclick=()=>{ V.cat=b.dataset.cat; go("tx"); });
   root.querySelectorAll("[data-act]").forEach(b=>b.onclick=()=>action(b.dataset.act));
@@ -1349,6 +1351,28 @@ function sheetPhoto(file){
       const msg = err&&err.message==="load-failed" ? "Couldn't load the receipt reader — check your connection." : "Couldn't read this photo — try a clearer one, or enter it manually.";
       finish(`<p class="photo-none">${esc(msg)}</p>`, null, "");
     });
+}
+
+/* ---- jump to a month ---- */
+function sheetJump(){
+  const now = monthStart(Date.now());
+  const first = S.txs.length ? monthStart(Math.min(...S.txs.map(t=>t.ts))) : now;
+  const months = [];
+  for(let d = new Date(now); d.getTime() >= first && months.length < 36; d.setMonth(d.getMonth()-1)){
+    const ms = monthStart(d.getTime());
+    const list = S.txs.filter(t => t.ts>=ms && t.ts<monthEnd(ms));
+    months.push({ ms, label: monthLabel(ms), out: totals(list).out, n: list.length });
+  }
+  const cur = monthStart(V.anchor);
+  showSheet("Jump to month", `<div class="jumplist">${months.map(m=>`
+    <button data-ms="${m.ms}" ${m.ms===cur?'aria-current="true"':""}>
+      <span class="g"><b>${esc(m.label)}</b><small>${m.n? m.n+(m.n===1?" entry":" entries") : "nothing yet"}</small></span>
+      ${m.out? `<span class="mono">${esc(fmtB(m.out,true))}</span>` : ""}
+    </button>`).join("")}</div>`,
+    `<button class="btn sec" data-close>Close</button>`);
+  $("#sheetBody").querySelectorAll("[data-ms]").forEach(b=>{
+    b.onclick = () => { V.anchor = +b.dataset.ms; closeSheet(); draw(); };
+  });
 }
 
 /* ---- bulk paste ---- */

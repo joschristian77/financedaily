@@ -434,3 +434,16 @@ svg{display:block}
 .spin{width:15px;height:15px;border-radius:99px;border:2px solid var(--line);border-top-color:var(--brand);
   animation:sp .7s linear infinite;flex:none}
 @keyframes sp{to{transform:rotate(360deg)}}
+
+.monthbar .nav .jump{display:flex;align-items:center;gap:3px;padding:0 8px;height:34px;border-radius:10px;
+  font-size:14.5px;font-weight:800;letter-spacing:-.2px;color:var(--ink)}
+.monthbar .nav .jump svg{width:14px;height:14px;color:var(--muted)}
+.monthbar .nav .jump:active{background:var(--card2)}
+.jumplist{display:flex;flex-direction:column;gap:6px}
+.jumplist button{display:flex;align-items:center;gap:12px;width:100%;text-align:left;padding:13px 14px;
+  border:1px solid var(--line);border-radius:13px;background:var(--card)}
+.jumplist button[aria-current="true"]{border-color:var(--brand);background:var(--brand-l)}
+.jumplist .g{flex:1;min-width:0}
+.jumplist .g b{display:block;font-size:15px;font-weight:700}
+.jumplist .g small{display:block;font-size:12.5px;color:var(--muted);font-weight:500;margin-top:1px}
+.jumplist .mono{font-size:14.5px;font-weight:800;color:var(--exp-tx);flex:none}
