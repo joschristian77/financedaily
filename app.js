@@ -95,6 +95,7 @@ CATS.forEach(c => { if(!(c.id in KW)) KW[c.id]=c.id; });
 const INCOME_WORDS = new Set(["income","masuk","terima","diterima","received","dapat","dapet","gaji","gajian","salary","refund","cashback","bonus","thr","untung","profit","jual","laku","sold","invoice"]);
 
 /* ============================ state ============================ */
+const APP_VERSION = "v20";
 const KEY = "duit.v2";
 const OLD_KEY = "duit.v1";
 /**
@@ -907,6 +908,9 @@ function viewMore(){
           <option value="light" ${S.s.theme==="light"?"selected":""}>Light</option>
           <option value="dark" ${S.s.theme==="dark"?"selected":""}>Dark</option>
         </select></div>
+      <button class="setrow" data-act="update"><span class="ic">${ico("cloud")}</span>
+        <span class="g"><b>Check for update</b><small>Running ${APP_VERSION} · tap to reload the latest</small></span>
+        <span class="val">${ico("chevR")}</span></button>
     </div>
   </div>
 
@@ -1463,6 +1467,17 @@ async function action(kind){
   }
   if(kind==="backup") return download(`duit-backup-${dstr(today())}.json`, JSON.stringify(S,null,2), "application/json");
   if(kind==="restore") return $("#fileIn").click();
+  if(kind==="update"){
+    toast("Updating\u2026");
+    try{
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map(r=>r.unregister()));
+      const keys = await caches.keys();
+      await Promise.all(keys.map(k=>caches.delete(k)));
+    }catch(e){}
+    location.replace(location.pathname + "?v=" + Date.now());
+    return;
+  }
   if(kind==="erase"){
     if(!S.txs.length) return toast("Nothing to erase.");
     if(!confirm(`Erase all ${S.txs.length} transactions on this device?\n\nThis can't be undone — export a backup first if you're unsure.`)) return;
@@ -1705,6 +1720,7 @@ function handleAddParam(){
 
 draw();
 handleAddParam();
+if(new URLSearchParams(location.search).has("v")) history.replaceState(null, "", location.pathname + location.hash);
 if(S.s.sync && S.s.fb) startSync(false);
 if("serviceWorker" in navigator && location.protocol.startsWith("http")){
   window.addEventListener("load", ()=>navigator.serviceWorker.register("sw.js").catch(()=>{}));
