@@ -95,7 +95,7 @@ CATS.forEach(c => { if(!(c.id in KW)) KW[c.id]=c.id; });
 const INCOME_WORDS = new Set(["income","masuk","terima","diterima","received","dapat","dapet","gaji","gajian","salary","refund","cashback","bonus","thr","untung","profit","jual","laku","sold","invoice"]);
 
 /* ============================ state ============================ */
-const APP_VERSION = "v20";
+const APP_VERSION = "v21";
 const KEY = "duit.v2";
 const OLD_KEY = "duit.v1";
 /**
